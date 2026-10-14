@@ -1,94 +1,142 @@
-import requests
+from datetime import datetime
 import json
 import os
+import requests
+import time
 
-TELEGRAM_BOT_TOKEN = "8238967218:AAGLa5BPQKtIeI2OyowzXK-b47O70WzXKZo"
-TELEGRAM_CHAT_ID = "7327715275"
-SEEN_IDS_FILE = "seen_ads.json"
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+STORED_IDS_FILE = "notified_ids.json"
 
-TARGET_QUERIES = [
-    "s24 fe",
-    "galaxy s24 fe",
-    "s24 fe 256",
-    "s24 fe 8 256",
-    "galaxy s24 fe 256",
-    "galaxy s24 fe 8 256",
-    "samsung s24 fe",
-    "samsung s24 fe 8 256"
-]
-
-LOCATIONS = {
+CITIES = {
     "Varanasi": "4059351",
-    "Gorakhpur": "1000035",
-    "Mau": "4059311",
-    "Bhadohi": "4403605",
-    "Sultanpur": "4059345",
     "Allahabad": "4059246",
+    "Azamgarh": "4059249",
+    "Bhadohi": "4059260",
+    "Ghazipur": "4059281",
     "Jaunpur": "4059291",
+    "Maunath Bhanjan": "4059311",
 }
 
-def send_telegram_alert(ad):
-    text = (
-        f"🚨 *New Deal Found!*\n"
-        f"📱 *Title:* {ad['title']}\n"
-        f"💰 *Price:* ₹{ad['price']['value']['raw']}\n"
-        f"📍 *Location:* {ad['locations_resolved']['ADMIN_LEVEL_3_name']}\n"
-        f"🔗 [View on OLX](https://www.olx.in/item/{ad['id']})"
-    )
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False
-    }
-    requests.post(url, json=payload)
 
-def load_seen_ids():
-    if os.path.exists(SEEN_IDS_FILE):
-        with open(SEEN_IDS_FILE, "r") as f:
-            return set(json.load(f))
+def load_notified_ids():
+    if os.path.exists(STORED_IDS_FILE):
+        with open(STORED_IDS_FILE, "r") as f:
+            try:
+                return set(json.load(f))
+            except json.JSONDecodeError:
+                return set()
     return set()
 
-def save_seen_ids(seen_ids):
-    with open(SEEN_IDS_FILE, "w") as f:
-        json.dump(list(seen_ids), f)
 
-def check_olx():
-    seen_ids = load_seen_ids()
+def save_notified_ids(notified_ids):
+    with open(STORED_IDS_FILE, "w") as f:
+        json.dump(list(notified_ids), f)
+
+
+def send_telegram_media_group(media_group):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup"
+    payload = {"chat_id": CHAT_ID, "media": media_group}
+    requests.post(url, json=payload)
+
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    requests.post(url, json=payload)
+
+
+def format_time(created_at_str):
+    try:
+        dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        return dt.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return created_at_str
+
+
+def check_city_ads(city_name, location_id, notified_ids):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    for loc_name, loc_id in LOCATIONS.items():
-        for query in TARGET_QUERIES:
-            params = {
-                "facet_limit": 100,
-                "location": loc_id,
-                "query": query,
-                "sorting": "desc-creation"
-            }
-            try:
-                res = requests.get("https://www.olx.in/api/relevance/v4/search", headers=headers, params=params, timeout=10)
-                if res.status_code != 200:
-                    continue
-                data = res.json().get("data", [])
+    page = 0
+    while True:
+        url = f"https://www.olx.in/api/relevance/v2/search?query=s24%20fe&location={location_id}&page={page}"
 
-                for item in data:
-                    ad_id = str(item.get("id"))
-                    title = item.get("title", "").lower()
-                    
-                    if any(k in title for k in ["s24 fe", "s24fe"]):
-                        if any(banned in title for banned in ["case", "cover", "tempered", "skin"]):
-                            continue
-                        
-                        if ad_id not in seen_ids:
-                            seen_ids.add(ad_id)
-                            send_telegram_alert(item)
-            except Exception as e:
-                print(f"Error checking {loc_name}: {e}")
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                break
 
-    save_seen_ids(seen_ids)
+            data = response.json()
+            ads = data.get("data", [])
+
+            if not ads:
+                break
+
+            for ad in ads:
+                ad_id = str(ad.get("id"))
+                if ad_id and ad_id not in notified_ids:
+                    title = ad.get("title", "No Title")
+                    price = (
+                        ad.get("price", {})
+                        .get("value", {})
+                        .get("display_value", "N/A")
+                    )
+                    description = ad.get(
+                        "description", "No description available"
+                    )
+                    time_raw = ad.get("created_at", "")
+                    time_posted = format_time(time_raw)
+                    url_ad = (
+                        f"https://www.olx.in/item/{ad_id}"
+                        if not ad.get("url")
+                        else ad.get("url")
+                    )
+
+                    photos = ad.get("images", [])
+                    photo_urls = [
+                        img.get("url") for img in photos if img.get("url")
+                    ][:10]
+
+                    message = (
+                        f"🚨 *New S24 FE Found!* 🚨\n\n"
+                        f"*City:* {city_name}\n"
+                        f"*Title:* {title}\n"
+                        f"*Price:* {price}\n"
+                        f"*Description:* {description}\n"
+                        f"*Posted At:* {time_posted}\n"
+                        f"*Link:* {url_ad}"
+                    )
+
+                    if photo_urls:
+                        media_group = [
+                            {"type": "photo", "media": url}
+                            for url in photo_urls
+                        ]
+                        media_group[0]["caption"] = message
+                        media_group[0]["parse_mode"] = "Markdown"
+                        send_telegram_media_group(media_group)
+                    else:
+                        send_telegram_message(message)
+
+                    notified_ids.add(ad_id)
+                    save_notified_ids(notified_ids)
+
+            page += 1
+            time.sleep(1)
+
+        except Exception as e:
+            print(f"Error checking {city_name}: {e}")
+            break
+
+
+def main():
+    notified_ids = load_notified_ids()
+    for city_name, loc_id in CITIES.items():
+        check_city_ads(city_name, loc_id, notified_ids)
+
 
 if __name__ == "__main__":
-    check_olx()
+    main()
+                    
