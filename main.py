@@ -1,11 +1,11 @@
-from datetime import datetime
-import json
 import os
-import requests
+import json
 import time
+import requests
+from datetime import datetime, timezone, timedelta
 
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = "7327715275"
 STORED_IDS_FILE = "notified_ids.json"
 
 CITIES = {
@@ -35,12 +35,18 @@ def save_notified_ids(notified_ids):
 
 
 def send_telegram_media_group(media_group):
+    if not TOKEN:
+        print("TELEGRAM_TOKEN set nahi hai!")
+        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup"
     payload = {"chat_id": CHAT_ID, "media": media_group}
     requests.post(url, json=payload)
 
 
 def send_telegram_message(message):
+    if not TOKEN:
+        print("TELEGRAM_TOKEN set nahi hai!")
+        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
@@ -49,7 +55,9 @@ def send_telegram_message(message):
 def format_time(created_at_str):
     try:
         dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-        return dt.strftime("%I:%M %p").lstrip("0")
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        dt_ist = dt.astimezone(ist_tz)
+        return dt_ist.strftime("%I:%M %p").lstrip("0")
     except Exception:
         return created_at_str
 
@@ -139,4 +147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                    
+    
