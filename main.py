@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -185,8 +186,8 @@ def handle_start_command():
                     lines = [
                         (
                             f"• [{ad['model_tag']}] <a"
-                            f" href='{ad['url']}'>{ad['title']}</a> - "
-                            f"<b>{ad['price']}</b> ({ad['location']})"
+                            f" href='{ad['url']}'>{html.escape(ad['title'])}</a> - "
+                            f"<b>{ad['price']}</b> ({html.escape(ad['location'])})"
                         )
                         for ad in current_ads
                     ]
@@ -213,9 +214,9 @@ def monitor_new_listings():
 
         alert = (
             f"🚨 <b>New Listing Found: {ad['model_tag']}</b>\n\n"
-            f"📱 <b>Title:</b> {ad['title']}\n"
+            f"📱 <b>Title:</b> {html.escape(ad['title'])}\n"
             f"💰 <b>Price:</b> {ad['price']}\n"
-            f"📍 <b>Location:</b> {ad['location']}\n"
+            f"📍 <b>Location:</b> {html.escape(ad['location'])}\n"
             f"🔗 <a href='{ad['url']}'>Open Listing</a>"
         )
         if send_telegram_message(TELEGRAM_CHAT_ID, alert):
