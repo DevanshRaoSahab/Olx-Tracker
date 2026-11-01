@@ -1,139 +1,232 @@
-import html
 import json
 import os
 import re
 import requests
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = "7327715275"
-NOTIFIED_FILE = "notified_ids.json"
-SEARCH_QUERY = "s24"
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7327715275")
+SEEN_FILE = "seen_ads.json"
+LAST_UPDATE_ID_FILE = "last_update_id.json"
 
-# Matches any variation of S24 FE (case-insensitive, optional spaces/hyphens between S, 24, and FE)
-S24_FE_REGEX = re.compile(r"\bs[\s\-_]*24[\s\-_]*fe\b", re.IGNORECASE)
+OLX_API_URL = "https://www.olx.in/api/relevance/v4/search"
 
-# Exclude any listing specifying 128GB or 8/128
-EXCLUDE_128_REGEX = re.compile(
-    r"\b128\s*(?:gb)?\b|8[\s/_\-]+128|128[\s/_\-]+8", re.IGNORECASE
-)
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Referer": "https://www.olx.in/varanasi_g4059281/mobile-phones_c1453",
+    "Origin": "https://www.olx.in",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Ch-Ua": (
+        '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
+    ),
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+}
+
+TARGET_QUERIES = ["S24 FE", "Reno 14"]
+LOCATION_ID = "4059281"  # Varanasi
 
 
-def matches_s24_fe(text: str) -> bool:
-    if not text:
-        return False
-    if EXCLUDE_128_REGEX.search(text):
-        return False
-    return bool(S24_FE_REGEX.search(text))
-
-
-def load_notified_ids() -> set:
-    if os.path.exists(NOTIFIED_FILE):
+def load_json(filepath, default):
+    if os.path.exists(filepath):
         try:
-            with open(NOTIFIED_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+            with open(filepath, "r") as f:
+                return json.load(f)
         except Exception:
-            return set()
-    return set()
+            return default
+    return default
 
 
-def save_notified_ids(ids: set) -> None:
-    with open(NOTIFIED_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(ids), f, indent=2)
+def save_json(filepath, data):
+    with open(filepath, "w") as f:
+        json.dump(data, f)
 
 
-def send_telegram_message(text: str) -> None:
+def classify_listing(text):
+    text_lower = text.lower()
+
+    # Samsung S24 FE check (exclude 128GB)
+    s24_fe_pattern = r"\bs[\s-]?24[\s-]?fe\b"
+    if re.search(s24_fe_pattern, text_lower):
+        if re.search(r"\b128\s*(gb|g)?\b", text_lower):
+            return None
+        return "Samsung S24 FE (256GB+)"
+
+    # Oppo Reno 14 Base model check (exclude Pro / Pro+ / Pro Max variations)
+    reno_14_pattern = r"\breno[\s-]?14\b"
+    if re.search(reno_14_pattern, text_lower):
+        if re.search(r"\bpro(\s*\+|\s*max)?\b", text_lower):
+            return None
+        return "Oppo Reno 14 (Base)"
+
+    return None
+
+
+def fetch_filtered_ads():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    valid_ads = []
+    seen_ids_in_run = set()
+
+    for query in TARGET_QUERIES:
+        params = {
+            "category": "1453",
+            "facet_only": "false",
+            "location": LOCATION_ID,
+            "query": query,
+            "size": "40",
+        }
+        try:
+            response = session.get(
+                OLX_API_URL, params=params, headers=HEADERS, timeout=15
+            )
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+            ads = data.get("data", [])
+
+            for ad in ads:
+                ad_id = str(ad.get("id"))
+                if ad_id in seen_ids_in_run:
+                    continue
+
+                title = ad.get("title", "")
+                description = ad.get("description", "")
+                full_text = f"{title} {description}"
+
+                model_tag = classify_listing(full_text)
+                if not model_tag:
+                    continue
+
+                seen_ids_in_run.add(ad_id)
+                price = (
+                    ad.get("price", {}).get("value", {}).get("display", "N/A")
+                )
+                location = ad.get("locations_resolved", {}).get(
+                    "ADMIN_LEVEL_3_name", "Varanasi"
+                )
+                url = f"https://www.olx.in/item/{ad_id}"
+
+                valid_ads.append(
+                    {
+                        "id": ad_id,
+                        "title": title,
+                        "model_tag": model_tag,
+                        "price": price,
+                        "location": location,
+                        "url": url,
+                    }
+                )
+        except Exception:
+            continue
+
+    return valid_ads
+
+
+def send_telegram_message(chat_id, text):
     if not TELEGRAM_BOT_TOKEN:
-        print("Telegram token missing.")
-        return
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False,
+        "disable_web_page_preview": True,
     }
     try:
-        res = requests.post(url, json=payload, timeout=15)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"Error sending message to Telegram: {e}")
+        resp = requests.post(url, json=payload, timeout=10)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
-def fetch_olx_ads(query: str) -> list:
-    url = "https://www.olx.in/api/relevance/v2/search"
-    params = {
-        "query": query,
-        "facet_limit": 100,
-        "lang": "en",
-        "size": 50,
-    }
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json",
-    }
+def handle_start_command():
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    last_update_id = load_json(LAST_UPDATE_ID_FILE, 0)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    params = {"offset": last_update_id + 1, "timeout": 2}
+
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("data", [])
-    except Exception as e:
-        print(f"Error fetching OLX ads: {e}")
-        return []
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.status_code != 200:
+            return
+        data = resp.json()
+        updates = data.get("result", [])
+        if not updates:
+            return
+
+        for update in updates:
+            up_id = update.get("update_id", 0)
+            if up_id > last_update_id:
+                last_update_id = up_id
+
+            message = update.get("message", {})
+            text = message.get("text", "").strip()
+            chat_id = message.get("chat", {}).get("id")
+
+            if text.startswith("/start") and chat_id:
+                current_ads = fetch_filtered_ads()
+                if not current_ads:
+                    msg = (
+                        "👋 <b>Bot Active</b>\n\nNo active listings found in"
+                        " Varanasi for S24 FE (excluding 128GB) or Oppo Reno 14"
+                        " series."
+                    )
+                else:
+                    lines = [
+                        (
+                            f"• [{ad['model_tag']}] <a"
+                            f" href='{ad['url']}'>{ad['title']}</a> - "
+                            f"<b>{ad['price']}</b> ({ad['location']})"
+                        )
+                        for ad in current_ads
+                    ]
+                    msg = (
+                        f"👋 <b>Current Listings ({len(current_ads)}"
+                        " Found):</b>\n\n" + "\n\n".join(lines)
+                    )
+                send_telegram_message(chat_id, msg)
+
+        save_json(LAST_UPDATE_ID_FILE, last_update_id)
+    except Exception:
+        pass
+
+
+def monitor_new_listings():
+    seen_ads = set(load_json(SEEN_FILE, []))
+    current_ads = fetch_filtered_ads()
+    new_seen = set(seen_ads)
+
+    for ad in current_ads:
+        ad_id = ad["id"]
+        if ad_id in seen_ads:
+            continue
+
+        alert = (
+            f"🚨 <b>New Listing Found: {ad['model_tag']}</b>\n\n"
+            f"📱 <b>Title:</b> {ad['title']}\n"
+            f"💰 <b>Price:</b> {ad['price']}\n"
+            f"📍 <b>Location:</b> {ad['location']}\n"
+            f"🔗 <a href='{ad['url']}'>Open Listing</a>"
+        )
+        if send_telegram_message(TELEGRAM_CHAT_ID, alert):
+            new_seen.add(ad_id)
+
+    save_json(SEEN_FILE, list(new_seen))
 
 
 def main():
-    notified_ids = load_notified_ids()
-    ads = fetch_olx_ads(SEARCH_QUERY)
-    new_notified_ids = set(notified_ids)
-
-    for item in ads:
-        ad_id = str(item.get("id"))
-        if not ad_id or ad_id in notified_ids:
-            continue
-
-        title = item.get("title", "")
-        description = item.get("description", "")
-        full_text = f"{title} {description}"
-
-        if matches_s24_fe(full_text):
-            price_display = (
-                item.get("price", {}).get("value", {}).get("display")
-                or item.get("price", {}).get("display")
-                or "N/A"
-            )
-
-            locations = item.get("locations_resolved", {})
-            location_parts = [
-                locations.get("SUBLOCALITY_LEVEL_1_name"),
-                locations.get("ADMIN_LEVEL_3_name"),
-            ]
-            location_name = (
-                ", ".join([p for p in location_parts if p]) or "Unknown Location"
-            )
-
-            ad_url = f"https://www.olx.in/item/{ad_id}"
-
-            safe_title = html.escape(title)
-            safe_price = html.escape(str(price_display))
-            safe_location = html.escape(location_name)
-
-            message = (
-                f"📱 <b>Samsung S24 FE Listing Detected</b>\n\n"
-                f"<b>Title:</b> {safe_title}\n"
-                f"<b>Price:</b> {safe_price}\n"
-                f"<b>Location:</b> {safe_location}\n"
-                f"<b>Link:</b> <a href=\"{ad_url}\">{ad_url}</a>"
-            )
-
-            send_telegram_message(message)
-            new_notified_ids.add(ad_id)
-
-    if new_notified_ids != notified_ids:
-        save_notified_ids(new_notified_ids)
+    handle_start_command()
+    monitor_new_listings()
 
 
 if __name__ == "__main__":
