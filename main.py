@@ -7,7 +7,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SEEN_FILE = "seen_ads.json"
 
-# Sabhi locations ki list
 LOCATIONS = [
     {"name": "Varanasi", "id": "4059351"},
     {"name": "Allahabad", "id": "4059246"},
@@ -54,30 +53,24 @@ def save_seen(filepath, data):
 
 def classify_listing(text):
     text_lower = text.lower()
-
-    # Samsung S24 FE check (exclude 128GB)
     if "s24 fe" in text_lower or "s24fe" in text_lower:
         if re.search(r"\b128\s*(gb)?\b", text_lower):
             return None
         return "Samsung S24 FE (128GB Excluded)"
 
-    # Oppo Reno 14 Base model check (exclude Pro / Pro+ / Pro Max variations)
     reno_14_pattern = r"\breno\s*14(?!\s*(pro|\+))"
     if re.search(reno_14_pattern, text_lower):
         if any(v in text_lower for v in ["pro", "pro+", "+", "pro max"]):
             return None
         return "Oppo Reno 14 (Base)"
-
     return None
 
 
 def fetch_filtered_ads():
     session = requests.Session()
     session.headers.update(HEADERS)
-
     valid_ads = []
 
-    # Har location ke liye search karega
     for loc in LOCATIONS:
         for query in TARGET_QUERIES:
             params = {
@@ -87,7 +80,6 @@ def fetch_filtered_ads():
                 "query": query,
                 "size": "40",
             }
-
             try:
                 response = session.get(OLX_API_URL, params=params, timeout=15)
                 if response.status_code != 200:
@@ -139,16 +131,16 @@ def send_telegram_message(text):
 
 
 def main():
+    # टेस्ट मैसेज भेजें ताकि पता चले स्क्रिप्ट चल गई है
+    send_telegram_message("🔍 <b>Script Started:</b> Checking configured locations for new ads...")
+
     seen_ids = set(load_seen(SEEN_FILE, []))
     ads = fetch_filtered_ads()
 
-    # Duplicate ads hatane ke liye (agar multi-query me repeat huye)
     unique_ads = {ad["id"]: ad for ad in ads}.values()
-
     new_ads = [ad for ad in unique_ads if ad["id"] not in seen_ids]
 
     if not seen_ids and not new_ads and ads:
-        # First run safeguard: agar koi match hai par notify pehli bar sabhi ka karna ho
         new_ads = list(unique_ads)
 
     if new_ads:
@@ -169,8 +161,7 @@ def main():
     else:
         print("No new matching ads found across monitored locations.")
         if not seen_ids:
-            # First time jab database khali ho aur koi ad na mile
-            send_telegram_message("🤖 <b>Bot Active</b>\n\nMonitoring started for Varanasi, Allahabad, Azamgarh, Bhadohi, Ghazipur, Jaunpur, Mau & Sultanpur. No matching ads right now.")
+            send_telegram_message("🤖 <b>Bot Active</b>\n\nMonitoring started. No matching ads right now.")
             save_seen(SEEN_FILE, ["initialized"])
 
 
